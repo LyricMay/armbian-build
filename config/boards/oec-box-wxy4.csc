@@ -1,4 +1,4 @@
-# Rockchip RK3566 oec-box-wxy4 2GB RAM SoC  eMMC USB2 USB3 SATA
+# Rockchip rk3566-box-wxy4 2GB RAM SoC  eMMC USB2 USB3 SATA
 BOARD_NAME="oec-box-wxy4"
 BOARDFAMILY="rk35xx"
 BOARD_MAINTAINER=""
