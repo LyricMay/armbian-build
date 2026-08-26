@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Minimal U-Boot device tree for the BDY G98.
+ * Linux owns the complete peripheral description.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/phy/phy-snps-pcie3.h>
+#include <dt-bindings/pinctrl/rockchip.h>
+#include "rk3588.dtsi"
+#include "rk3588-u-boot.dtsi"
+
+/ {
+	model = "BDY G98";
+	compatible = "bdy,g98", "rockchip,rk3588";
+
+	aliases {
+		serial2 = &uart2;
+	};
+
+	chosen {
+		stdout-path = "serial2:1500000n8";
+		u-boot,spl-boot-order = &spi_nor;
+	};
+
+	vcc3v3_pcie30: regulator-vcc3v3-pcie30 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc3v3_pcie30";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		enable-active-high;
+		gpio = <&gpio3 RK_PD5 GPIO_ACTIVE_HIGH>;
+		startup-delay-us = <7500>;
+		u-boot,dm-pre-reloc;
+	};
+
+	vcc5v0_otg: regulator-vcc5v0-otg {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc5v0_otg";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		enable-active-high;
+		gpio = <&gpio4 RK_PA7 GPIO_ACTIVE_HIGH>;
+		u-boot,dm-pre-reloc;
+	};
+};
+
+&pcie30phy {
+	rockchip,pcie30-phymode = <PHY_MODE_PCIE_NANBNB>;
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&pcie3x2 {
+	status = "disabled";
+};
+
+&pcie3x4 {
+	num-lanes = <2>;
+	reset-gpios = <&gpio4 RK_PB6 GPIO_ACTIVE_HIGH>;
+	vpcie3v3-supply = <&vcc3v3_pcie30>;
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&pinctrl {
+	/delete-node/ fspi;
+
+	fspi {
+		u-boot,dm-spl;
+
+		fspim0_pins: fspim0-pins {
+			rockchip,pins =
+				/* fspi_clk_m0 */
+				<2 RK_PA0 2 &pcfg_pull_none>,
+				/* fspi_cs0n_m0 */
+				<2 RK_PD6 2 &pcfg_pull_none>,
+				/* fspi_d0_m0 */
+				<2 RK_PD0 2 &pcfg_pull_none>,
+				/* fspi_d1_m0 */
+				<2 RK_PD1 2 &pcfg_pull_none>,
+				/* fspi_d2_m0 */
+				<2 RK_PD2 2 &pcfg_pull_none>,
+				/* fspi_d3_m0 */
+				<2 RK_PD3 2 &pcfg_pull_none>;
+			u-boot,dm-spl;
+		};
+	};
+};
+
+&sdhci {
+	status = "disabled";
+};
+
+&sdmmc {
+	status = "disabled";
+};
+
+&sfc {
+	pinctrl-names = "default";
+	pinctrl-0 = <&fspim0_pins>;
+	status = "okay";
+	u-boot,dm-spl;
+};
+
+&spi_nand {
+	status = "disabled";
+};
+
+&spi_nor {
+	spi-max-frequency = <24000000>;
+	status = "okay";
+	u-boot,dm-spl;
+};
+
+&uart2 {
+	status = "okay";
+	u-boot,dm-spl;
+};
+
+&u2phy0 {
+	status = "okay";
+};
+
+&u2phy0_otg {
+	phy-supply = <&vcc5v0_otg>;
+	status = "okay";
+};
+
+&usbdp_phy0 {
+	status = "okay";
+};
+
+&usbdp_phy0_u3 {
+	status = "okay";
+};
+
+&usbdrd3_0 {
+	status = "okay";
+};
+
+&usbdrd_dwc3_0 {
+	dr_mode = "host";
+	status = "okay";
+};
