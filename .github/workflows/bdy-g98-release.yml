@@ -27,6 +27,11 @@ jobs:
       - name: Check out Armbian build
         uses: actions/checkout@v4
 
+      - name: Set up ARM emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Build image
         env:
           RELEASE: ${{ matrix.release }}
