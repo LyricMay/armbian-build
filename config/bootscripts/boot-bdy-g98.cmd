@@ -36,10 +36,7 @@ fi
 
 # Get PARTUUID of the partition from which this script was loaded.
 if test "${devtype}" = "mmc"; then part uuid mmc ${devnum}:${distro_bootpart} partuuid; fi
-if test "${devtype}" = "nvme"; then
-	setenv rootdev "/dev/nvme${devnum}n1p1"
-	part uuid nvme ${devnum}:${distro_bootpart} partuuid
-fi
+if test "${devtype}" = "nvme"; then part uuid nvme ${devnum}:${distro_bootpart} partuuid; fi
 
 setenv bootargs "root=${rootdev} rootwait rootfstype=${rootfstype} ${consoleargs} consoleblank=0 loglevel=${verbosity} ubootpart=${partuuid} usb-storage.quirks=${usbstoragequirks} ${extraargs} ${extraboardargs}"
 
