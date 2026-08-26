@@ -58,7 +58,11 @@
 };
 
 &pcie3x2 {
-	status = "disabled";
+	num-lanes = <2>;
+	reset-gpios = <&gpio3 RK_PD4 GPIO_ACTIVE_HIGH>;
+	vpcie3v3-supply = <&vcc3v3_pcie30>;
+	status = "okay";
+	u-boot,dm-pre-reloc;
 };
 
 &pcie3x4 {
