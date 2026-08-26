@@ -48,7 +48,8 @@ jobs:
         run: |
           mkdir -p "release-assets/${RELEASE}"
           find output/images -maxdepth 1 -type f -exec cp -v {} "release-assets/${RELEASE}/" \;
-          find . -type f -name rkspi_loader.img -exec cp -v {} "release-assets/${RELEASE}/" \;
+          find cache/sources -type f -name rkspi_loader.img -exec cp -v {} "release-assets/${RELEASE}/" \; -quit
+          test -f "release-assets/${RELEASE}/rkspi_loader.img"
           (cd "release-assets/${RELEASE}" && sha256sum * > SHA256SUMS)
 
       - name: Upload build artifact
