@@ -6,7 +6,7 @@
 setenv load_addr "0x9000000"
 setenv overlay_error "false"
 # default values
-setenv rootdev "/dev/nvme0n1p1"
+setenv rootdev
 setenv verbosity "1"
 setenv console "serial"
 setenv bootlogo "false"
@@ -35,8 +35,17 @@ else
 fi
 
 # Get PARTUUID of the partition from which this script was loaded.
+setenv partuuid
 if test "${devtype}" = "mmc"; then part uuid mmc ${devnum}:${distro_bootpart} partuuid; fi
 if test "${devtype}" = "nvme"; then part uuid nvme ${devnum}:${distro_bootpart} partuuid; fi
+
+if test -z "${rootdev}"; then
+	if test -n "${partuuid}"; then
+		setenv rootdev "PARTUUID=${partuuid}"
+	else
+		setenv rootdev "LABEL=armbi_root"
+	fi
+fi
 
 setenv bootargs "root=${rootdev} rootwait rootfstype=${rootfstype} ${consoleargs} consoleblank=0 loglevel=${verbosity} ubootpart=${partuuid} usb-storage.quirks=${usbstoragequirks} ${extraargs} ${extraboardargs}"
 

@@ -1,0 +1,43 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Derive stable RTL8125 addresses from the RK3588 serial and PCIe port role.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+set -eu
+
+devpath="${1:-}"
+role="${2:-}"
+[ -n "${devpath}" ] && [ -n "${role}" ] || exit 1
+
+net_parent="/sys${devpath%/net/*}/net"
+set -- "${net_parent}"/*
+[ -e "${1}" ] || exit 1
+
+iface="${1##*/}"
+sysfs="/sys/class/net/${iface}"
+[ -d "${sysfs}" ] || exit 1
+
+if [ "$(cat "${sysfs}/addr_assign_type")" = "0" ]; then
+	exit 0
+fi
+
+serial_file="/proc/device-tree/serial-number"
+if [ -r "${serial_file}" ]; then
+	seed="$(tr -d '\000' < "${serial_file}")"
+else
+	seed=""
+fi
+
+if [ -z "${seed}" ]; then
+	seed="$(cat /etc/machine-id 2> /dev/null || true)"
+fi
+[ -n "${seed}" ] || exit 1
+
+hash="$(printf 'bdy-g98/%s/%s' "${seed}" "${role}" | sha256sum | cut -c1-12)"
+hash_octet="$(printf '%s' "$hash" | cut -c1-2)"; first_octet="$(printf '%02x' "$(((0x$hash_octet & 0xfe) | 0x02))")"
+mac="${first_octet}:$(printf '%s' "${hash}" | cut -c3-4):$(printf '%s' "${hash}" | cut -c5-6):$(printf '%s' "${hash}" | cut -c7-8):$(printf '%s' "${hash}" | cut -c9-10):$(printf '%s' "${hash}" | cut -c11-12)"
+
+ip link set dev "${iface}" address "${mac}"
+echo "bdy-g98-stable-mac: ${iface} -> ${mac} (${role})"

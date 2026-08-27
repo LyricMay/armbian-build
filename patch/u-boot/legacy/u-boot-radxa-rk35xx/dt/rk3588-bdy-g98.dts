@@ -7,14 +7,32 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/phy/phy-snps-pcie3.h>
 #include <dt-bindings/pinctrl/rockchip.h>
-#include "rk3588.dtsi"
-#include "rk3588-u-boot.dtsi"
+#include "rockchip/rk3588.dtsi"
+#include "rockchip/rk3588-u-boot.dtsi"
+#include "rockchip/rk3588-rk806-single.dtsi"
 
 / {
 	model = "BDY G98";
 	compatible = "bdy,g98", "rockchip,rk3588";
+
+	adc-keys {
+		compatible = "adc-keys";
+		io-channels = <&saradc 1>;
+		io-channel-names = "buttons";
+		keyup-threshold-microvolt = <1800000>;
+		u-boot,dm-pre-reloc;
+		status = "okay";
+
+		recovery-key {
+			u-boot,dm-pre-reloc;
+			linux,code = <KEY_VOLUMEUP>;
+			label = "recovery";
+			press-threshold-microvolt = <1750>;
+		};
+	};
 
 	aliases {
 		serial2 = &uart2;
@@ -25,6 +43,37 @@
 		u-boot,spl-boot-order = &spi_nor;
 	};
 
+	vcc12v_dcin: regulator-vcc12v-dcin {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc12v_dcin";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+		u-boot,dm-pre-reloc;
+	};
+
+	vcc5v0_sys: regulator-vcc5v0-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc5v0_sys";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&vcc12v_dcin>;
+		u-boot,dm-pre-reloc;
+	};
+
+	vcc_1v1_nldo_s3: regulator-vcc-1v1-nldo-s3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_1v1_nldo_s3";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <1100000>;
+		regulator-max-microvolt = <1100000>;
+		vin-supply = <&vcc5v0_sys>;
+		u-boot,dm-pre-reloc;
+	};
 	vcc3v3_pcie30: regulator-vcc3v3-pcie30 {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_pcie30";
@@ -57,8 +106,99 @@
 	u-boot,dm-pre-reloc;
 };
 
+&display_subsystem {
+	clocks = <&hdptxphy_hdmi_clk0>;
+	clock-names = "hdmi0_phy_pll";
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&sys_grf {
+	u-boot,dm-pre-reloc;
+};
+
+&hclk_vo1 {
+	u-boot,dm-pre-reloc;
+};
+
+&pclk_vo1_grf {
+	u-boot,dm-pre-reloc;
+};
+
+&vop_opp_table {
+	u-boot,dm-pre-reloc;
+};
+
+&vop_grf {
+	u-boot,dm-pre-reloc;
+};
+
+&vop_out {
+	u-boot,dm-pre-reloc;
+};
+
+&vop_mmu {
+	u-boot,dm-pre-reloc;
+};
+
+&vop {
+	u-boot,dm-pre-reloc;
+};
+
+&hdmi0_in {
+	u-boot,dm-pre-reloc;
+};
+
+&hdptxphy_hdmi_clk0 {
+	u-boot,dm-pre-reloc;
+};
+
+&vp0_out_hdmi0 {
+	u-boot,dm-pre-reloc;
+};
+
+&hdmim0_tx0_cec {
+	u-boot,dm-pre-reloc;
+};
+
+&hdmim0_tx0_hpd {
+	u-boot,dm-pre-reloc;
+};
+
+&hdmim0_tx0_scl {
+	u-boot,dm-pre-reloc;
+};
+
+&hdptxphy0_grf {
+	u-boot,dm-pre-reloc;
+};
+
+&vo1_grf {
+	u-boot,dm-pre-reloc;
+};
+
+&hdmi0 {
+	enable-gpios = <&gpio4 RK_PB1 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&hdmi0_in_vp0 {
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&hdptxphy_hdmi0 {
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
 &pcie3x2 {
-	status = "disabled";
+	num-lanes = <2>;
+	reset-gpios = <&gpio3 RK_PD4 GPIO_ACTIVE_HIGH>;
+	vpcie3v3-supply = <&vcc3v3_pcie30>;
+	status = "okay";
+	u-boot,dm-pre-reloc;
 };
 
 &pcie3x4 {
@@ -119,6 +259,12 @@
 	u-boot,dm-spl;
 };
 
+&route_hdmi0 {
+	connect = <&vp0_out_hdmi0>;
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
 &uart2 {
 	status = "okay";
 	u-boot,dm-spl;
@@ -148,4 +294,18 @@
 &usbdrd_dwc3_0 {
 	dr_mode = "host";
 	status = "okay";
+};
+
+&vop {
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&vop_mmu {
+	status = "okay";
+	u-boot,dm-pre-reloc;
+};
+
+&vp0 {
+	u-boot,dm-pre-reloc;
 };

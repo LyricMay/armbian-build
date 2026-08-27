@@ -54,6 +54,8 @@
 			default-state = "off";
 			function = LED_FUNCTION_DISK;
 			gpios = <&gpio3 RK_PC1 GPIO_ACTIVE_HIGH>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&led_hdd_pin>;
 		};
 
 		led-net {
@@ -61,6 +63,8 @@
 			default-state = "off";
 			function = LED_FUNCTION_LAN;
 			gpios = <&gpio3 RK_PC0 GPIO_ACTIVE_HIGH>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&led_net_pin>;
 		};
 
 		led-work {
@@ -68,6 +72,8 @@
 			function = LED_FUNCTION_HEARTBEAT;
 			gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "heartbeat";
+			pinctrl-names = "default";
+			pinctrl-0 = <&led_work_pin>;
 		};
 	};
 
@@ -207,6 +213,11 @@
 	status = "okay";
 };
 
+&display_subsystem {
+	clocks = <&hdptxphy_hdmi0>;
+	clock-names = "hdmi0_phy_pll";
+};
+
 &dmc {
 	center-supply = <&vdd_ddr_s0>;
 	mem-supply = <&vdd_log_s0>;
@@ -339,6 +350,58 @@
 	status = "okay";
 };
 
+&iep {
+	status = "okay";
+};
+
+&iep_mmu {
+	status = "okay";
+};
+
+&jpegd {
+	status = "okay";
+};
+
+&jpegd_mmu {
+	status = "okay";
+};
+
+&jpege_ccu {
+	status = "okay";
+};
+
+&jpege0 {
+	status = "okay";
+};
+
+&jpege0_mmu {
+	status = "okay";
+};
+
+&jpege1 {
+	status = "okay";
+};
+
+&jpege1_mmu {
+	status = "okay";
+};
+
+&jpege2 {
+	status = "okay";
+};
+
+&jpege2_mmu {
+	status = "okay";
+};
+
+&jpege3 {
+	status = "okay";
+};
+
+&jpege3_mmu {
+	status = "okay";
+};
+
 &mdio0 {
 	status = "disabled";
 };
@@ -347,14 +410,30 @@
 	status = "disabled";
 };
 
+&mpp_srv {
+	status = "okay";
+};
+
 &pcie2x1l0 {
 	reset-gpios = <&gpio1 RK_PB4 GPIO_ACTIVE_HIGH>;
+	realtek,led-data = <
+		0x18 0x022b
+		0x86 0x022b
+		0x84 0x022b
+		0x96 0x022b
+	>;
 	vpcie3v3-supply = <&vcc3v3_pcie30>;
 	status = "okay";
 };
 
 &pcie2x1l1 {
 	reset-gpios = <&gpio4 RK_PA2 GPIO_ACTIVE_HIGH>;
+	realtek,led-data = <
+		0x18 0x022b
+		0x86 0x022b
+		0x84 0x022b
+		0x96 0x022b
+	>;
 	vpcie3v3-supply = <&vcc3v3_pcie30>;
 	status = "okay";
 };
@@ -382,6 +461,20 @@
 };
 
 &pinctrl {
+	gpio-leds {
+		led_hdd_pin: led-hdd-pin {
+			rockchip,pins = <3 RK_PC1 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+
+		led_net_pin: led-net-pin {
+			rockchip,pins = <3 RK_PC0 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+
+		led_work_pin: led-work-pin {
+			rockchip,pins = <3 RK_PB7 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
 	pcie {
 		pcie30_clkreqn: pcie30-clkreqn {
 			rockchip,pins = <4 RK_PB4 RK_FUNC_GPIO &pcfg_pull_down>;
@@ -409,6 +502,26 @@
 	};
 };
 
+&rga2 {
+	status = "okay";
+};
+
+&rga3_core0 {
+	status = "okay";
+};
+
+&rga3_0_mmu {
+	status = "okay";
+};
+
+&rga3_core1 {
+	status = "okay";
+};
+
+&rga3_1_mmu {
+	status = "okay";
+};
+
 &rknpu {
 	mem-supply = <&vdd_npu_mem_s0>;
 	rknpu-supply = <&vdd_npu_s0>;
@@ -419,7 +532,52 @@
 	status = "okay";
 };
 
+&rkvdec_ccu {
+	status = "okay";
+};
+
+&rkvdec0 {
+	status = "okay";
+};
+
+&rkvdec0_mmu {
+	status = "okay";
+};
+
+&rkvdec1 {
+	status = "okay";
+};
+
+&rkvdec1_mmu {
+	status = "okay";
+};
+
+&rkvenc_ccu {
+	status = "okay";
+};
+
+&rkvenc0 {
+	mem-supply = <&vdd_vdenc_mem_s0>;
+	venc-supply = <&vdd_vdenc_s0>;
+	status = "okay";
+};
+
+&rkvenc0_mmu {
+	status = "okay";
+};
+
+&rkvenc1 {
+	mem-supply = <&vdd_vdenc_mem_s0>;
+	venc-supply = <&vdd_vdenc_s0>;
+	status = "okay";
+};
+
+&rkvenc1_mmu {
+	status = "okay";
+};
+
 &route_hdmi0 {
+	connect = <&vp0_out_hdmi0>;
 	status = "okay";
 };
 
@@ -559,6 +717,18 @@
 
 &vdd_log_s0 {
 	regulator-max-microvolt = <750000>;
+};
+
+&vdpu {
+	status = "okay";
+};
+
+&vdpu_mmu {
+	status = "okay";
+};
+
+&vepu {
+	status = "okay";
 };
 
 &vop {

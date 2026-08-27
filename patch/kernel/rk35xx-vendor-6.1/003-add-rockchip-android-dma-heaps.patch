@@ -1,0 +1,744 @@
+diff --git a/drivers/dma-buf/heaps/Kconfig b/drivers/dma-buf/heaps/Kconfig
+index 464e7cf..73f42d4 100644
+--- a/drivers/dma-buf/heaps/Kconfig
++++ b/drivers/dma-buf/heaps/Kconfig
+@@ -1,3 +1,20 @@
++config DMABUF_HEAPS_PAGE_POOL
++	bool
++	depends on DMABUF_HEAPS
++
++config DMABUF_HEAPS_DEFERRED_FREE
++	bool
++	depends on DMABUF_HEAPS
++
++config DMABUF_HEAPS_ROCKCHIP_SYSTEM
++	bool "Rockchip DMA-BUF System Heap"
++	depends on DMABUF_HEAPS && ARCH_ROCKCHIP && ROCKCHIP_SIP
++	select DMABUF_HEAPS_PAGE_POOL
++	select DMABUF_HEAPS_DEFERRED_FREE
++	help
++	  Use the Rockchip system heap implementation with DMA32 and
++	  uncached-DMA32 heaps.
++
+ config DMABUF_HEAPS_SYSTEM
+ 	bool "DMA-BUF System Heap"
+ 	depends on DMABUF_HEAPS
+@@ -13,6 +30,12 @@ config DMABUF_HEAPS_CMA
+ 	  by the Contiguous Memory Allocator (CMA). If your system has these
+ 	  regions, you should say Y here.
+ 
++config DMABUF_HEAPS_CMA_LEGACY
++	bool "Rockchip legacy DMA-BUF CMA heaps"
++	depends on DMABUF_HEAPS && DMA_CMA && ARCH_ROCKCHIP
++	help
++	  Add the Rockchip cma and cma-uncached heap interfaces.
++
+ config DMABUF_HEAPS_SRAM
+ 	tristate "Export on-chip SRAM pools using DMA-Heaps"
+ 	depends on DMABUF_HEAPS && SRAM
+diff --git a/drivers/dma-buf/heaps/Makefile b/drivers/dma-buf/heaps/Makefile
+index 2c71813..162fcd0 100644
+--- a/drivers/dma-buf/heaps/Makefile
++++ b/drivers/dma-buf/heaps/Makefile
+@@ -1,4 +1,17 @@
+ # SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_DMABUF_HEAPS_PAGE_POOL)	+= page_pool.o
++obj-$(CONFIG_DMABUF_HEAPS_DEFERRED_FREE) += deferred-free-helper.o
++
++ifeq ($(CONFIG_DMABUF_HEAPS_ROCKCHIP_SYSTEM),y)
++obj-y	+= rk_system_heap.o
++else
+ obj-$(CONFIG_DMABUF_HEAPS_SYSTEM)	+= system_heap.o
++endif
++
++ifeq ($(CONFIG_DMABUF_HEAPS_CMA_LEGACY),y)
++obj-y	+= rk_cma_heap.o
++else
+ obj-$(CONFIG_DMABUF_HEAPS_CMA)		+= cma_heap.o
++endif
++
+ obj-$(CONFIG_DMABUF_HEAPS_SRAM)	+= sram_heap.o
+diff --git a/drivers/dma-buf/heaps/deferred-free-helper.c b/drivers/dma-buf/heaps/deferred-free-helper.c
+new file mode 100644
+index 0000000..392b262
+--- /dev/null
++++ b/drivers/dma-buf/heaps/deferred-free-helper.c
+@@ -0,0 +1,137 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Deferred dmabuf freeing helper
++ *
++ * Copyright (C) 2020 Linaro, Ltd.
++ *
++ * Based on the ION page pool code
++ * Copyright (C) 2011 Google, Inc.
++ */
++
++#include <linux/freezer.h>
++#include <linux/list.h>
++#include <linux/slab.h>
++#include <linux/swap.h>
++#include <linux/sched/signal.h>
++
++#include "deferred-free-helper.h"
++
++static LIST_HEAD(free_list);
++static size_t list_nr_pages;
++wait_queue_head_t freelist_waitqueue;
++struct task_struct *freelist_task;
++static DEFINE_SPINLOCK(free_list_lock);
++
++void deferred_free(struct deferred_freelist_item *item,
++		   void (*free)(struct deferred_freelist_item*,
++				enum df_reason),
++		   size_t nr_pages)
++{
++	unsigned long flags;
++
++	INIT_LIST_HEAD(&item->list);
++	item->nr_pages = nr_pages;
++	item->free = free;
++
++	spin_lock_irqsave(&free_list_lock, flags);
++	list_add(&item->list, &free_list);
++	list_nr_pages += nr_pages;
++	spin_unlock_irqrestore(&free_list_lock, flags);
++	wake_up(&freelist_waitqueue);
++}
++EXPORT_SYMBOL_GPL(deferred_free);
++
++static size_t free_one_item(enum df_reason reason)
++{
++	unsigned long flags;
++	size_t nr_pages;
++	struct deferred_freelist_item *item;
++
++	spin_lock_irqsave(&free_list_lock, flags);
++	if (list_empty(&free_list)) {
++		spin_unlock_irqrestore(&free_list_lock, flags);
++		return 0;
++	}
++	item = list_first_entry(&free_list, struct deferred_freelist_item, list);
++	list_del(&item->list);
++	nr_pages = item->nr_pages;
++	list_nr_pages -= nr_pages;
++	spin_unlock_irqrestore(&free_list_lock, flags);
++
++	item->free(item, reason);
++	return nr_pages;
++}
++
++static unsigned long get_freelist_nr_pages(void)
++{
++	unsigned long nr_pages;
++	unsigned long flags;
++
++	spin_lock_irqsave(&free_list_lock, flags);
++	nr_pages = list_nr_pages;
++	spin_unlock_irqrestore(&free_list_lock, flags);
++	return nr_pages;
++}
++
++static unsigned long freelist_shrink_count(struct shrinker *shrinker,
++					   struct shrink_control *sc)
++{
++	return get_freelist_nr_pages();
++}
++
++static unsigned long freelist_shrink_scan(struct shrinker *shrinker,
++					  struct shrink_control *sc)
++{
++	unsigned long total_freed = 0;
++
++	if (sc->nr_to_scan == 0)
++		return 0;
++
++	while (total_freed < sc->nr_to_scan) {
++		size_t pages_freed = free_one_item(DF_UNDER_PRESSURE);
++
++		if (!pages_freed)
++			break;
++
++		total_freed += pages_freed;
++	}
++
++	return total_freed;
++}
++
++static struct shrinker freelist_shrinker = {
++	.count_objects = freelist_shrink_count,
++	.scan_objects = freelist_shrink_scan,
++	.seeks = DEFAULT_SEEKS,
++	.batch = 0,
++};
++
++static int deferred_free_thread(void *data)
++{
++	while (true) {
++		wait_event_freezable(freelist_waitqueue,
++				     get_freelist_nr_pages() > 0);
++
++		free_one_item(DF_NORMAL);
++	}
++
++	return 0;
++}
++
++static int deferred_freelist_init(void)
++{
++	list_nr_pages = 0;
++
++	init_waitqueue_head(&freelist_waitqueue);
++	freelist_task = kthread_run(deferred_free_thread, NULL,
++				    "%s", "dmabuf-deferred-free-worker");
++	if (IS_ERR(freelist_task)) {
++		pr_err("Creating thread for deferred free failed\n");
++		return -1;
++	}
++	sched_set_normal(freelist_task, 19);
++
++	return register_shrinker(&freelist_shrinker, "dmabuf-deferred-free");
++}
++module_init(deferred_freelist_init);
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/dma-buf/heaps/deferred-free-helper.h b/drivers/dma-buf/heaps/deferred-free-helper.h
+new file mode 100644
+index 0000000..1194032
+--- /dev/null
++++ b/drivers/dma-buf/heaps/deferred-free-helper.h
+@@ -0,0 +1,55 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef DEFERRED_FREE_HELPER_H
++#define DEFERRED_FREE_HELPER_H
++
++/**
++ * df_reason - enum for reason why item was freed
++ *
++ * This provides a reason for why the free function was called
++ * on the item. This is useful when deferred_free is used in
++ * combination with a pagepool, so under pressure the page can
++ * be immediately freed.
++ *
++ * DF_NORMAL:         Normal deferred free
++ *
++ * DF_UNDER_PRESSURE: Free was called because the system
++ *                    is under memory pressure. Usually
++ *                    from a shrinker. Avoid allocating
++ *                    memory in the free call, as it may
++ *                    fail.
++ */
++enum df_reason {
++	DF_NORMAL,
++	DF_UNDER_PRESSURE,
++};
++
++/**
++ * deferred_freelist_item - item structure for deferred freelist
++ *
++ * This is to be added to the structure for whatever you want to
++ * defer freeing on.
++ *
++ * @nr_pages: number of pages used by item to be freed
++ * @free: function pointer to be called when freeing the item
++ * @list: list entry for the deferred list
++ */
++struct deferred_freelist_item {
++	size_t nr_pages;
++	void (*free)(struct deferred_freelist_item *i,
++		     enum df_reason reason);
++	struct list_head list;
++};
++
++/**
++ * deferred_free - call to add item to the deferred free list
++ *
++ * @item: Pointer to deferred_freelist_item field of a structure
++ * @free: Function pointer to the free call
++ * @nr_pages: number of pages to be freed
++ */
++void deferred_free(struct deferred_freelist_item *item,
++		   void (*free)(struct deferred_freelist_item *i,
++				enum df_reason reason),
++		   size_t nr_pages);
++#endif
+diff --git a/drivers/dma-buf/heaps/page_pool.c b/drivers/dma-buf/heaps/page_pool.c
+new file mode 100644
+index 0000000..f672961
+--- /dev/null
++++ b/drivers/dma-buf/heaps/page_pool.c
+@@ -0,0 +1,247 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * DMA BUF page pool system
++ *
++ * Copyright (C) 2020 Linaro Ltd.
++ *
++ * Based on the ION page pool code
++ * Copyright (C) 2011 Google, Inc.
++ */
++
++#include <linux/freezer.h>
++#include <linux/list.h>
++#include <linux/slab.h>
++#include <linux/swap.h>
++#include <linux/sched/signal.h>
++#include "page_pool.h"
++
++static LIST_HEAD(pool_list);
++static DEFINE_MUTEX(pool_list_lock);
++
++static inline
++struct page *dmabuf_page_pool_alloc_pages(struct dmabuf_page_pool *pool)
++{
++	if (fatal_signal_pending(current))
++		return NULL;
++	return alloc_pages(pool->gfp_mask, pool->order);
++}
++
++static inline void dmabuf_page_pool_free_pages(struct dmabuf_page_pool *pool,
++					       struct page *page)
++{
++	__free_pages(page, pool->order);
++}
++
++static void dmabuf_page_pool_add(struct dmabuf_page_pool *pool, struct page *page)
++{
++	int index;
++
++	if (PageHighMem(page))
++		index = POOL_HIGHPAGE;
++	else
++		index = POOL_LOWPAGE;
++
++	mutex_lock(&pool->mutex);
++	list_add_tail(&page->lru, &pool->items[index]);
++	pool->count[index]++;
++	mutex_unlock(&pool->mutex);
++	mod_node_page_state(page_pgdat(page), NR_KERNEL_MISC_RECLAIMABLE,
++			    1 << pool->order);
++}
++
++static struct page *dmabuf_page_pool_remove(struct dmabuf_page_pool *pool, int index)
++{
++	struct page *page;
++
++	mutex_lock(&pool->mutex);
++	page = list_first_entry_or_null(&pool->items[index], struct page, lru);
++	if (page) {
++		pool->count[index]--;
++		list_del(&page->lru);
++		mod_node_page_state(page_pgdat(page), NR_KERNEL_MISC_RECLAIMABLE,
++				    -(1 << pool->order));
++	}
++	mutex_unlock(&pool->mutex);
++
++	return page;
++}
++
++static struct page *dmabuf_page_pool_fetch(struct dmabuf_page_pool *pool)
++{
++	struct page *page = NULL;
++
++	page = dmabuf_page_pool_remove(pool, POOL_HIGHPAGE);
++	if (!page)
++		page = dmabuf_page_pool_remove(pool, POOL_LOWPAGE);
++
++	return page;
++}
++
++struct page *dmabuf_page_pool_alloc(struct dmabuf_page_pool *pool)
++{
++	struct page *page = NULL;
++
++	if (WARN_ON(!pool))
++		return NULL;
++
++	page = dmabuf_page_pool_fetch(pool);
++
++	if (!page)
++		page = dmabuf_page_pool_alloc_pages(pool);
++	return page;
++}
++EXPORT_SYMBOL_GPL(dmabuf_page_pool_alloc);
++
++void dmabuf_page_pool_free(struct dmabuf_page_pool *pool, struct page *page)
++{
++	if (WARN_ON(pool->order != compound_order(page)))
++		return;
++
++	dmabuf_page_pool_add(pool, page);
++}
++EXPORT_SYMBOL_GPL(dmabuf_page_pool_free);
++
++static int dmabuf_page_pool_total(struct dmabuf_page_pool *pool, bool high)
++{
++	int count = pool->count[POOL_LOWPAGE];
++
++	if (high)
++		count += pool->count[POOL_HIGHPAGE];
++
++	return count << pool->order;
++}
++
++struct dmabuf_page_pool *dmabuf_page_pool_create(gfp_t gfp_mask, unsigned int order)
++{
++	struct dmabuf_page_pool *pool = kmalloc(sizeof(*pool), GFP_KERNEL);
++	int i;
++
++	if (!pool)
++		return NULL;
++
++	for (i = 0; i < POOL_TYPE_SIZE; i++) {
++		pool->count[i] = 0;
++		INIT_LIST_HEAD(&pool->items[i]);
++	}
++	pool->gfp_mask = gfp_mask | __GFP_COMP;
++	pool->order = order;
++	mutex_init(&pool->mutex);
++
++	mutex_lock(&pool_list_lock);
++	list_add(&pool->list, &pool_list);
++	mutex_unlock(&pool_list_lock);
++
++	return pool;
++}
++EXPORT_SYMBOL_GPL(dmabuf_page_pool_create);
++
++void dmabuf_page_pool_destroy(struct dmabuf_page_pool *pool)
++{
++	struct page *page;
++	int i;
++
++	/* Remove us from the pool list */
++	mutex_lock(&pool_list_lock);
++	list_del(&pool->list);
++	mutex_unlock(&pool_list_lock);
++
++	/* Free any remaining pages in the pool */
++	for (i = 0; i < POOL_TYPE_SIZE; i++) {
++		while ((page = dmabuf_page_pool_remove(pool, i)))
++			dmabuf_page_pool_free_pages(pool, page);
++	}
++
++	kfree(pool);
++}
++EXPORT_SYMBOL_GPL(dmabuf_page_pool_destroy);
++
++static int dmabuf_page_pool_do_shrink(struct dmabuf_page_pool *pool, gfp_t gfp_mask,
++				      int nr_to_scan)
++{
++	int freed = 0;
++	bool high;
++
++	if (current_is_kswapd())
++		high = true;
++	else
++		high = !!(gfp_mask & __GFP_HIGHMEM);
++
++	if (nr_to_scan == 0)
++		return dmabuf_page_pool_total(pool, high);
++
++	while (freed < nr_to_scan) {
++		struct page *page;
++
++		/* Try to free low pages first */
++		page = dmabuf_page_pool_remove(pool, POOL_LOWPAGE);
++		if (!page)
++			page = dmabuf_page_pool_remove(pool, POOL_HIGHPAGE);
++
++		if (!page)
++			break;
++
++		dmabuf_page_pool_free_pages(pool, page);
++		freed += (1 << pool->order);
++	}
++
++	return freed;
++}
++
++static int dmabuf_page_pool_shrink(gfp_t gfp_mask, int nr_to_scan)
++{
++	struct dmabuf_page_pool *pool;
++	int nr_total = 0;
++	int nr_freed;
++	int only_scan = 0;
++
++	if (!nr_to_scan)
++		only_scan = 1;
++
++	mutex_lock(&pool_list_lock);
++	list_for_each_entry(pool, &pool_list, list) {
++		if (only_scan) {
++			nr_total += dmabuf_page_pool_do_shrink(pool,
++							       gfp_mask,
++							       nr_to_scan);
++		} else {
++			nr_freed = dmabuf_page_pool_do_shrink(pool,
++							      gfp_mask,
++							      nr_to_scan);
++			nr_to_scan -= nr_freed;
++			nr_total += nr_freed;
++			if (nr_to_scan <= 0)
++				break;
++		}
++	}
++	mutex_unlock(&pool_list_lock);
++
++	return nr_total;
++}
++
++static unsigned long dmabuf_page_pool_shrink_count(struct shrinker *shrinker,
++						   struct shrink_control *sc)
++{
++	return dmabuf_page_pool_shrink(sc->gfp_mask, 0);
++}
++
++static unsigned long dmabuf_page_pool_shrink_scan(struct shrinker *shrinker,
++						  struct shrink_control *sc)
++{
++	if (sc->nr_to_scan == 0)
++		return 0;
++	return dmabuf_page_pool_shrink(sc->gfp_mask, sc->nr_to_scan);
++}
++
++struct shrinker pool_shrinker = {
++	.count_objects = dmabuf_page_pool_shrink_count,
++	.scan_objects = dmabuf_page_pool_shrink_scan,
++	.seeks = DEFAULT_SEEKS,
++	.batch = 0,
++};
++
++int dmabuf_page_pool_init_shrinker(void)
++{
++	return register_shrinker(&pool_shrinker, "dmabuf-page-pool");
++}
++module_init(dmabuf_page_pool_init_shrinker);
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/dma-buf/heaps/page_pool.h b/drivers/dma-buf/heaps/page_pool.h
+new file mode 100644
+index 0000000..6b083b0
+--- /dev/null
++++ b/drivers/dma-buf/heaps/page_pool.h
+@@ -0,0 +1,55 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * DMA BUF PagePool implementation
++ * Based on earlier ION code by Google
++ *
++ * Copyright (C) 2011 Google, Inc.
++ * Copyright (C) 2020 Linaro Ltd.
++ */
++
++#ifndef _DMABUF_PAGE_POOL_H
++#define _DMABUF_PAGE_POOL_H
++
++#include <linux/device.h>
++#include <linux/kref.h>
++#include <linux/mm_types.h>
++#include <linux/mutex.h>
++#include <linux/shrinker.h>
++#include <linux/types.h>
++
++/* page types we track in the pool */
++enum {
++	POOL_LOWPAGE,      /* Clean lowmem pages */
++	POOL_HIGHPAGE,     /* Clean highmem pages */
++
++	POOL_TYPE_SIZE,
++};
++
++/**
++ * struct dmabuf_page_pool - pagepool struct
++ * @count[]:		array of number of pages of that type in the pool
++ * @items[]:		array of list of pages of the specific type
++ * @mutex:		lock protecting this struct and especially the count
++ *			item list
++ * @gfp_mask:		gfp_mask to use from alloc
++ * @order:		order of pages in the pool
++ * @list:		list node for list of pools
++ *
++ * Allows you to keep a pool of pre allocated pages to use
++ */
++struct dmabuf_page_pool {
++	int count[POOL_TYPE_SIZE];
++	struct list_head items[POOL_TYPE_SIZE];
++	struct mutex mutex;
++	gfp_t gfp_mask;
++	unsigned int order;
++	struct list_head list;
++};
++
++struct dmabuf_page_pool *dmabuf_page_pool_create(gfp_t gfp_mask,
++						 unsigned int order);
++void dmabuf_page_pool_destroy(struct dmabuf_page_pool *pool);
++struct page *dmabuf_page_pool_alloc(struct dmabuf_page_pool *pool);
++void dmabuf_page_pool_free(struct dmabuf_page_pool *pool, struct page *page);
++
++#endif /* _DMABUF_PAGE_POOL_H */
+diff --git a/drivers/dma-buf/heaps/rk_cma_heap.c b/drivers/dma-buf/heaps/rk_cma_heap.c
+index 7ef319e..029a3f4 100644
+--- a/drivers/dma-buf/heaps/rk_cma_heap.c
++++ b/drivers/dma-buf/heaps/rk_cma_heap.c
+@@ -274,31 +274,35 @@ static void *cma_heap_do_vmap(struct cma_heap_buffer *buffer)
+ 	return vaddr;
+ }
+ 
+-static void *cma_heap_vmap(struct dma_buf *dmabuf)
++static int cma_heap_vmap(struct dma_buf *dmabuf, struct iosys_map *map)
+ {
+ 	struct cma_heap_buffer *buffer = dmabuf->priv;
+ 	void *vaddr;
++	int ret = 0;
+ 
+ 	mutex_lock(&buffer->lock);
+ 	if (buffer->vmap_cnt) {
+ 		buffer->vmap_cnt++;
+-		vaddr = buffer->vaddr;
++		iosys_map_set_vaddr(map, buffer->vaddr);
+ 		goto out;
+ 	}
+ 
+ 	vaddr = cma_heap_do_vmap(buffer);
+-	if (IS_ERR(vaddr))
++	if (IS_ERR(vaddr)) {
++		ret = PTR_ERR(vaddr);
+ 		goto out;
++	}
+ 
+ 	buffer->vaddr = vaddr;
+ 	buffer->vmap_cnt++;
++	iosys_map_set_vaddr(map, buffer->vaddr);
+ out:
+ 	mutex_unlock(&buffer->lock);
+ 
+-	return vaddr;
++	return ret;
+ }
+ 
+-static void cma_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
++static void cma_heap_vunmap(struct dma_buf *dmabuf, struct iosys_map *map)
+ {
+ 	struct cma_heap_buffer *buffer = dmabuf->priv;
+ 
+@@ -308,6 +312,7 @@ static void cma_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
+ 		buffer->vaddr = NULL;
+ 	}
+ 	mutex_unlock(&buffer->lock);
++	iosys_map_clear(map);
+ }
+ 
+ static void cma_heap_dma_buf_release(struct dma_buf *dmabuf)
+@@ -563,10 +568,8 @@ static int __add_cma_heap(struct cma *cma, void *data)
+ 	}
+ 
+ 	cma_uncached_heap = kzalloc(sizeof(*cma_heap), GFP_KERNEL);
+-	if (!cma_uncached_heap) {
+-		ret = -ENOMEM;
+-		goto put_cma_heap;
+-	}
++	if (!cma_uncached_heap)
++		return -ENOMEM;
+ 
+ 	cma_uncached_heap->cma = cma;
+ 
+@@ -582,19 +585,16 @@ static int __add_cma_heap(struct cma *cma, void *data)
+ 
+ 	ret = set_heap_dev_dma(dma_heap_get_dev(cma_uncached_heap->heap));
+ 	if (ret)
+-		goto put_uncached_cma_heap;
++		return ret;
+ 
+ 	mb(); /* make sure we only set allocate after dma_mask is set */
+ 	cma_uncached_heap_ops.allocate = cma_uncached_heap_allocate;
+ 
+ 	return 0;
+ 
+-put_uncached_cma_heap:
+-	dma_heap_put(cma_uncached_heap->heap);
+ free_uncached_cma_heap:
+ 	kfree(cma_uncached_heap);
+-put_cma_heap:
+-	dma_heap_put(cma_heap->heap);
++	return ret;
+ free_cma_heap:
+ 	kfree(cma_heap);
+ 
+diff --git a/drivers/dma-buf/heaps/rk_system_heap.c b/drivers/dma-buf/heaps/rk_system_heap.c
+index f904f6f..a345dc1 100644
+--- a/drivers/dma-buf/heaps/rk_system_heap.c
++++ b/drivers/dma-buf/heaps/rk_system_heap.c
+@@ -377,31 +377,35 @@ static void *system_heap_do_vmap(struct system_heap_buffer *buffer)
+ 	return vaddr;
+ }
+ 
+-static void *system_heap_vmap(struct dma_buf *dmabuf)
++static int system_heap_vmap(struct dma_buf *dmabuf, struct iosys_map *map)
+ {
+ 	struct system_heap_buffer *buffer = dmabuf->priv;
+ 	void *vaddr;
++	int ret = 0;
+ 
+ 	mutex_lock(&buffer->lock);
+ 	if (buffer->vmap_cnt) {
+ 		buffer->vmap_cnt++;
+-		vaddr = buffer->vaddr;
++		iosys_map_set_vaddr(map, buffer->vaddr);
+ 		goto out;
+ 	}
+ 
+ 	vaddr = system_heap_do_vmap(buffer);
+-	if (IS_ERR(vaddr))
++	if (IS_ERR(vaddr)) {
++		ret = PTR_ERR(vaddr);
+ 		goto out;
++	}
+ 
+ 	buffer->vaddr = vaddr;
+ 	buffer->vmap_cnt++;
++	iosys_map_set_vaddr(map, buffer->vaddr);
+ out:
+ 	mutex_unlock(&buffer->lock);
+ 
+-	return vaddr;
++	return ret;
+ }
+ 
+-static void system_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
++static void system_heap_vunmap(struct dma_buf *dmabuf, struct iosys_map *map)
+ {
+ 	struct system_heap_buffer *buffer = dmabuf->priv;
+ 
+@@ -411,6 +415,7 @@ static void system_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
+ 		buffer->vaddr = NULL;
+ 	}
+ 	mutex_unlock(&buffer->lock);
++	iosys_map_clear(map);
+ }
+ 
+ static int system_heap_zero_buffer(struct system_heap_buffer *buffer)
+@@ -655,24 +660,8 @@ static struct dma_buf *system_heap_allocate(struct dma_heap *heap,
+ 	return system_heap_do_allocate(heap, len, fd_flags, heap_flags, false);
+ }
+ 
+-static long system_get_pool_size(struct dma_heap *heap)
+-{
+-	int i;
+-	long num_pages = 0;
+-	struct dmabuf_page_pool **pool;
+-
+-	pool = strstr(dma_heap_get_name(heap), "dma32") ? dma32_pools : pools;
+-	for (i = 0; i < NUM_ORDERS; i++, pool++) {
+-		num_pages += ((*pool)->count[POOL_LOWPAGE] +
+-			      (*pool)->count[POOL_HIGHPAGE]) << (*pool)->order;
+-	}
+-
+-	return num_pages << PAGE_SHIFT;
+-}
+-
+ static const struct dma_heap_ops system_heap_ops = {
+ 	.allocate = system_heap_allocate,
+-	.get_pool_size = system_get_pool_size,
+ };
+ 
+ static struct dma_buf *system_uncached_heap_allocate(struct dma_heap *heap,
