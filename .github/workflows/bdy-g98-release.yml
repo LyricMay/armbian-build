@@ -1,6 +1,8 @@
 name: Build BDY G98 ReDroid image
 
 on:
+  schedule:
+    - cron: "0 0 * * *"  # daily at 00:00 UTC
   workflow_dispatch:
   pull_request:
     paths:
@@ -69,6 +71,27 @@ jobs:
           cd "${asset_dir}"
           sha256sum -- * > SHA256SUMS
 
+          # Create daily tag for automatic release
+          DATE=$(date +%Y%m%d)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "daily-${DATE}" -m "Daily build ${DATE}"
+          git push origin "daily-${DATE}"
+          asset_dir="release-assets/bdy-g98-redroid-trixie"
+          install -d "${asset_dir}"
+          find output/images -maxdepth 1 -type f -exec cp -v -- {} "${asset_dir}/" \;
+
+          spi_loader="output/images/rkspi_loader.img"
+          if [ ! -s "${spi_loader}" ]; then
+            spi_loader="$(find cache/sources/u-boot-worktree -type f \
+              -name rkspi_loader.img -print -quit)"
+          fi
+          test -s "${spi_loader}"
+          install -m 0644 "${spi_loader}" "${asset_dir}/rkspi_loader.img"
+
+          cd "${asset_dir}"
+          sha256sum -- * > SHA256SUMS
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -79,7 +102,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/daily-')
     needs: build
     runs-on: ubuntu-22.04
     permissions:
